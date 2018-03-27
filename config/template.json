@@ -1,0 +1,16 @@
+{
+  "server": "8.8.8.8",
+  "server_port": 443,
+  "local_port": 1080,
+  "method": "chacha20",
+  "password": "xxx",
+  "protocol": "rc4-md5",
+  "protocolparam": "",
+  "obfs": "",
+  "obfs_param": "",
+  "ss_redir_options": {
+    "bypass_ips": [],
+    "bypass_preset": "chnroute",
+    "ota": true
+  }
+}
