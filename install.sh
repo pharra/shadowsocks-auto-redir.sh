@@ -2,7 +2,6 @@
 link() {
     ln -sf $PWD /opt/shadowsocks-auto-redir
     cp $PWD/systemd/shadowsocks-auto-redir@.service /etc/systemd/system/shadowsocks-auto-redir@.service
-    ln -s $PWD/config /etc/shadowsocks
     systemctl daemon-reload
 }
 
@@ -14,9 +13,7 @@ unlink() {
 
 update() {
     rm -rf /etc/systemd/system/shadowsocks-auto-redir@.service
-    rm -rf /etc/shadowsocks
     cp $PWD/systemd/shadowsocks-auto-redir@.service /etc/systemd/system/shadowsocks-auto-redir@.service
-    ln -s $PWD/config /etc/shadowsocks
     systemctl daemon-reload
 }
 
