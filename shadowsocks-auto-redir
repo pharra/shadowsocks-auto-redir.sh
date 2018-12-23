@@ -149,7 +149,7 @@ fi
 SS_PARAMS="-c $CONFIG_PATH"
 
 if [[ `jq -r ".ss_redir_options.ota" $CONFIG_PATH` == "true" ]]; then
-    SS_PARAMS="-A $SS_PARAMS"
+    SS_PARAMS="$SS_PARAMS"
 fi
 
 do_ss_redir $SS_PARAMS
