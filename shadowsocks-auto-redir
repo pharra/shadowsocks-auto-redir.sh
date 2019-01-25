@@ -22,6 +22,13 @@ do_ipset() {
         ipset $@
     fi
 }
+do_ip() {
+    if [ "$DEBUG" == "1" ]; then
+        echo "ip $@"
+    else
+        ip $@
+    fi
+}
 do_ss_redir() {
     if [ "$DEBUG" == "1" ]; then
         echo "ss-redir $@"
@@ -31,9 +38,27 @@ do_ss_redir() {
 }
 clear_rules() {
     echo "Clearing rules"
-    do_iptables -t nat -D OUTPUT -p tcp -j SHADOWSOCKS
-    do_iptables -t nat -F SHADOWSOCKS
-    do_iptables -t nat -X SHADOWSOCKS
+
+    # TCP
+    do_iptables -t nat -D OUTPUT -p tcp -j SHADOWSOCKS_TCP
+
+    do_iptables -t nat -F SHADOWSOCKS_TCP
+    do_iptables -t nat -X SHADOWSOCKS_TCP
+
+    # UDP
+    do_iptables -t mangle -D PREROUTING -p udp -j SHADOWSOCKS_UDP
+    do_iptables -t mangle -D OUTPUT -p udp -j SHADOWSOCKS_UDP_MARK
+
+    do_iptables -t mangle -F SHADOWSOCKS_UDP
+    do_iptables -t mangle -X SHADOWSOCKS_UDP
+
+    do_iptables -t mangle -F SHADOWSOCKS_UDP_MARK
+    do_iptables -t mangle -X SHADOWSOCKS_UDP_MARK
+
+    do_ip route del local default dev lo table 100
+    do_ip rule del fwmark 1 lookup 100
+
+    # ipset
     do_ipset destroy shadowsocks
 
     if [[ "$IPV6" == "true" ]]; then
@@ -71,17 +96,25 @@ elif [ ! -f "$CONFIG_PATH" ]; then
     exit 1
 fi
 
-do_iptables -t nat -N SHADOWSOCKS
+# IP内网地址
+BYPASS_RESERVED_IPS=" \
+    0.0.0.0/8 \
+    10.0.0.0/8 \
+    127.0.0.0/8 \
+    169.254.0.0/16 \
+    172.16.0.0/12 \
+    192.168.0.0/16 \
+    224.0.0.0/4 \
+    240.0.0.0/4 \
+"
 
-# Bypass users
-BYPASS_USERS=`jq -r ".ss_redir_options.bypass_users" $CONFIG_PATH`
-if [[ "$BYPASS_USERS" != "null" ]]; then
-    BYPASS_USERS=`jq -r ".ss_redir_options.bypass_users[]" $CONFIG_PATH`
-    for user in $BYPASS_USERS; do
-        do_iptables -t nat -A SHADOWSOCKS -m owner --uid-owner $user -j RETURN
-        #do_ip6tables -t nat -A OUTPUT -m owner --uid-owner $user -j RETURN
-    done
-fi
+# Load bypass route set
+do_ipset -N shadowsocks hash:net maxelem 65536
+
+# add subnet address to ipset
+for line in $BYPASS_RESERVED_IPS; do
+    do_ipset add shadowsocks $line
+done
 
 # Bypass ips
 SERVER=`jq -r ".server" $CONFIG_PATH`
@@ -89,7 +122,7 @@ SERVER=`jq -r ".server" $CONFIG_PATH`
 if [[ $SERVER =~ "127."* ]]; then
     echo "Skipping local address $SERVER"
 else
-    do_iptables -t nat -A SHADOWSOCKS -d $SERVER -j RETURN
+    do_ipset add shadowsocks $SERVER
 fi
 
 BYPASS_IPS=`jq -r ".ss_redir_options.bypass_ips" $CONFIG_PATH`
@@ -98,23 +131,11 @@ if [[ "$BYPASS_IPS" != "null" ]]; then
     # Should only iterate when the item is not null
     BYPASS_IPS=`jq -r ".ss_redir_options.bypass_ips[]" $CONFIG_PATH`
     for ip in $BYPASS_IPS; do
-        do_iptables -t nat -A SHADOWSOCKS -d $ip -j RETURN
+        do_ipset add shadowsocks $ip
     done
 fi
 
-# Allow connection to preserved networks
-do_iptables -t nat -A SHADOWSOCKS -d 0.0.0.0/8 -j RETURN
-do_iptables -t nat -A SHADOWSOCKS -d 10.0.0.0/8 -j RETURN
-do_iptables -t nat -A SHADOWSOCKS -d 127.0.0.0/8 -j RETURN
-do_iptables -t nat -A SHADOWSOCKS -d 169.254.0.0/16 -j RETURN
-do_iptables -t nat -A SHADOWSOCKS -d 172.16.0.0/12 -j RETURN
-do_iptables -t nat -A SHADOWSOCKS -d 192.168.0.0/16 -j RETURN
-do_iptables -t nat -A SHADOWSOCKS -d 224.0.0.0/4 -j RETURN
-do_iptables -t nat -A SHADOWSOCKS -d 240.0.0.0/4 -j RETURN
-
-# Load bypass route set
-do_ipset -N shadowsocks hash:net maxelem 65536
-
+# chn ip
 BYPASS_PRESET=`jq -r ".ss_redir_options.bypass_preset" $CONFIG_PATH`
 
 if [[ "$BYPASS_PRESET" == "chnroute" ]]; then
@@ -123,14 +144,56 @@ if [[ "$BYPASS_PRESET" == "chnroute" ]]; then
     done
 fi
 
-do_iptables -t nat -A SHADOWSOCKS -p tcp -m set --match-set shadowsocks dst -j RETURN
+
+# TCP rules
+do_iptables -t nat -N SHADOWSOCKS_TCP
+
+# Bypass users
+BYPASS_USERS=`jq -r ".ss_redir_options.bypass_users" $CONFIG_PATH`
+if [[ "$BYPASS_USERS" != "null" ]]; then
+    BYPASS_USERS=`jq -r ".ss_redir_options.bypass_users[]" $CONFIG_PATH`
+    for user in $BYPASS_USERS; do
+        do_iptables -t nat -A SHADOWSOCKS_TCP -m owner --uid-owner $user -j RETURN
+        #do_ip6tables -t nat -A OUTPUT -m owner --uid-owner $user -j RETURN
+    done
+fi
 
 # Redirect to ss-redir port
 LOCAL_PORT=`jq -r ".local_port" $CONFIG_PATH`
+do_iptables -t nat -A SHADOWSOCKS_TCP -p tcp -m set --match-set shadowsocks dst -j RETURN
+do_iptables -t nat -A SHADOWSOCKS_TCP -p tcp -j REDIRECT --to-ports $LOCAL_PORT
 
-do_iptables -t nat -A SHADOWSOCKS -p tcp -j REDIRECT --to-port $LOCAL_PORT
-do_iptables -t nat -A OUTPUT -p tcp -j SHADOWSOCKS
-# TODO: Support UDP as an extension in .ss_redir_options
+# Apply for tcp
+do_iptables -t nat -A OUTPUT -p tcp -j SHADOWSOCKS_TCP
+
+
+# UDP规则
+do_iptables -t mangle -N SHADOWSOCKS_UDP
+do_iptables -t mangle -N SHADOWSOCKS_UDP_MARK
+
+do_ip route add local default dev lo table 100
+do_ip rule add fwmark 1 lookup 100
+
+do_iptables -t mangle -A SHADOWSOCKS_UDP -p udp -m set --match-set shadowsocks dst -j RETURN
+do_iptables -t mangle -A SHADOWSOCKS_UDP -p udp -j TPROXY --on-port $LOCAL_PORT --tproxy-mark 0x01/0x01
+
+do_iptables -t mangle -A SHADOWSOCKS_UDP_MARK -p udp -m set --match-set shadowsocks dst -j RETURN
+do_iptables -t mangle -A SHADOWSOCKS_UDP_MARK -p udp -j MARK --set-mark 1
+
+# Bypass users
+BYPASS_USERS=`jq -r ".ss_redir_options.bypass_users" $CONFIG_PATH`
+if [[ "$BYPASS_USERS" != "null" ]]; then
+    BYPASS_USERS=`jq -r ".ss_redir_options.bypass_users[]" $CONFIG_PATH`
+    for user in $BYPASS_USERS; do
+        do_iptables -t nat -A SHADOWSOCKS_UDP -m owner --uid-owner $user -j RETURN
+        do_iptables -t nat -A SHADOWSOCKS_UDP_MARK -m owner --uid-owner $user -j RETURN
+        #do_ip6tables -t nat -A OUTPUT -m owner --uid-owner $user -j RETURN
+    done
+fi
+
+# Apply for udp
+do_iptables -t mangle -A PREROUTING -p udp -j SHADOWSOCKS_UDP
+do_iptables -t mangle -A OUTPUT -p udp -j SHADOWSOCKS_UDP_MARK
 
 # IPv6 redirect to IPv4 Shadowsocks
 # Please set local_address to ::
