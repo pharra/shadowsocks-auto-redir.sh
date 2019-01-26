@@ -209,7 +209,7 @@ if [[ "$IPV6" == "true" ]]; then
 fi
 
 # Build ss-redir params
-SS_PARAMS="-c $CONFIG_PATH"
+SS_PARAMS="-u -c $CONFIG_PATH"
 
 if [[ `jq -r ".ss_redir_options.ota" $CONFIG_PATH` == "true" ]]; then
     SS_PARAMS="$SS_PARAMS"
